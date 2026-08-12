@@ -25,21 +25,23 @@ echo    Hiddify / sing-box) and check that it opens a blocked site in your
 echo    browser. These tools lend that proxy to the VPN client - without it,
 echo    nothing here can work.
 echo.
+echo    Nothing here connects for you. Once a step reports OK, connect from
+echo    the VPN app yourself.
+echo.
 echo    ExpressVPN
 echo      1   Diagnose            what is broken (changes nothing)
 echo      2   Apply the fix       asks for administrator
-echo      3   Scan regions        disconnect the VPN first
-echo      4   Connect and test
-echo      5   Revert the fix      asks for administrator
+echo      3   List regions        which ones answer (disconnect the VPN first)
+echo      4   Revert the fix      asks for administrator
 echo      W   Why did it fail     read the last attempt out of the log
 echo      A   Repair adapter      when W blames the network adapter
 echo.
 echo    Windscribe                no administrator needed
-echo      6   Diagnose            what is broken (changes nothing)
-echo      7   Start it fixed      relaunch with its API through the proxy
-echo      8   Scan cities         fast, which locations answer (about a minute)
-echo      T   Test protocols      which ones connect (takes a few minutes)
-echo      9   Desktop shortcut    always start it the right way
+echo      5   Diagnose            what is broken (changes nothing)
+echo      6   Start it fixed      relaunch with its API through the proxy
+echo      7   List locations      which ones answer (about a minute)
+echo      8   Desktop shortcut    always start it the right way
+echo      T   Test protocols      connects, to find which protocols work
 echo      R   Undo Windscribe     remove shortcut, start it normally
 echo.
 echo      0   Exit
@@ -59,31 +61,16 @@ set /a EMPTY=0
 if "%choice%"=="1" ( set "PS1=%XV%" & set "ACT=diagnose"  & goto run )
 if "%choice%"=="2" ( set "PS1=%XV%" & set "ACT=apply"     & goto run )
 if "%choice%"=="3" ( set "PS1=%XV%" & set "ACT=scan"      & goto run )
-if "%choice%"=="4" ( goto test )
-if "%choice%"=="5" ( set "PS1=%XV%" & set "ACT=revert"    & goto run )
+if "%choice%"=="4" ( set "PS1=%XV%" & set "ACT=revert"    & goto run )
 if /i "%choice%"=="W" ( set "PS1=%XV%" & set "ACT=why"    & goto run )
 if /i "%choice%"=="A" ( set "PS1=%XV%" & set "ACT=repair" & goto run )
-if "%choice%"=="6" ( set "PS1=%WS%" & set "ACT=diagnose"  & goto run )
-if "%choice%"=="7" ( set "PS1=%WS%" & set "ACT=launch"    & goto run )
-if "%choice%"=="8" ( set "PS1=%WS%" & set "ACT=scan"      & goto run )
+if "%choice%"=="5" ( set "PS1=%WS%" & set "ACT=diagnose"  & goto run )
+if "%choice%"=="6" ( set "PS1=%WS%" & set "ACT=launch"    & goto run )
+if "%choice%"=="7" ( set "PS1=%WS%" & set "ACT=scan"      & goto run )
+if "%choice%"=="8" ( set "PS1=%WS%" & set "ACT=shortcut"  & goto run )
 if /i "%choice%"=="T" ( set "PS1=%WS%" & set "ACT=protocols" & goto run )
-if "%choice%"=="9" ( set "PS1=%WS%" & set "ACT=shortcut"  & goto run )
 if /i "%choice%"=="R" ( set "PS1=%WS%" & set "ACT=revert" & goto run )
 if "%choice%"=="0" exit /b 0
-goto menu
-
-:test
-echo.
-set "REG="
-set /p "REG=   Region slug, or press Enter to pick one automatically: "
-echo.
-if "%REG%"=="" (
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%XV%" -Action test
-) else (
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%XV%" -Action test -Region "%REG%"
-)
-echo.
-pause
 goto menu
 
 :run

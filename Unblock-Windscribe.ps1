@@ -31,15 +31,11 @@
     diagnose   Report what is broken and whether a usable proxy exists (default).
     launch     Restart the Windscribe client with the proxy environment set.
     protocols  Connect with each protocol in turn and report which ones work.
-    locations  Connect-test several locations and report which ones come up.
     shortcut   Put a desktop shortcut that always launches it the right way.
     revert     Remove that shortcut and start the client normally again.
 
 .PARAMETER Proxy
     Proxy URL, e.g. http://127.0.0.1:10808. Omitted means auto-detect.
-
-.PARAMETER Count
-    How many locations -Action locations should try. Default 8.
 
 .EXAMPLE
     .\Unblock-Windscribe.ps1
@@ -59,13 +55,10 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('diagnose', 'launch', 'scan', 'protocols', 'locations', 'shortcut', 'revert')]
+    [ValidateSet('diagnose', 'launch', 'scan', 'protocols', 'shortcut', 'revert')]
     [string] $Action = 'diagnose',
 
     [string] $Proxy,
-
-    [ValidateRange(1, 40)]
-    [int] $Count = 8,
 
     # Probe every server and every port instead of a representative sample.
     # Roughly 3900 probes rather than 1600; finds about three more locations.
@@ -302,9 +295,13 @@ function Get-WsInventory {
     if (-not $servers -or -not $locs) { throw 'The cached inventory is empty; run -Action launch first.' }
 
     $dcCity = @{}
+    $cityCountry = @{}
     foreach ($L in $locs) {
         foreach ($dc in $L['datacenters']) {
-            if ($dc['city']) { $dcCity[[string]$dc['id']] = [string]$dc['city'] }
+            if ($dc['city']) {
+                $dcCity[[string]$dc['id']] = [string]$dc['city']
+                $cityCountry[[string]$dc['city']] = [string]$L['name']
+            }
         }
     }
 
@@ -317,22 +314,23 @@ function Get-WsInventory {
         if (-not $byCity.ContainsKey($city)) { $byCity[$city] = New-Object Collections.ArrayList }
         [void] $byCity[$city].Add([string]$ip)
     }
-    $byCity
+    [pscustomobject]@{ ByCity = $byCity; Country = $cityCountry }
 }
 
 function Invoke-WsScan {
-    param([hashtable] $ByCity, [switch] $All)
+    param($Inventory, [switch] $All)
 
+    $byCity = $Inventory.ByCity
     $ports = if ($All) { $StealthPorts } else { $StealthPortsFast }
     $take  = if ($All) { 99 } else { $ServersPerCity }
 
-    $tasks = foreach ($city in $ByCity.Keys) {
-        foreach ($ip in ($ByCity[$city] | Select-Object -First $take)) {
+    $tasks = foreach ($city in $byCity.Keys) {
+        foreach ($ip in ($byCity[$city] | Select-Object -First $take)) {
             foreach ($p in $ports) { [pscustomobject]@{ City = $city; Ip = $ip; Port = $p } }
         }
     }
-    Write-Info "$($ByCity.Count) cities, $($tasks.Count) probes on Stealth ports $($ports -join ', ')."
-    Write-Info 'A city counts as usable if any one of its servers answers on any port.'
+    Write-Info "$($byCity.Count) cities, $($tasks.Count) probes on Stealth ports $($ports -join ', ')."
+    Write-Info 'Nothing connects - this only opens a handshake and closes it again.'
     Write-Host ''
 
     $probe = {
@@ -392,11 +390,13 @@ function Invoke-WsScan {
     $pool.Close(); $pool.Dispose()
 
     $hit.GetEnumerator() | ForEach-Object {
+        $c = $Inventory.Country[$_.Key]
         [pscustomobject]@{
-            City  = $_.Key
-            Ports = (($_.Value | Sort-Object) -join ',')
+            Country = if ($c) { $c } else { '?' }
+            City    = $_.Key
+            Ports   = (($_.Value | Sort-Object) -join ',')
         }
-    } | Sort-Object City
+    } | Sort-Object Country, City
 }
 
 
@@ -525,8 +525,8 @@ try {
                 Write-Info 'behaves differently from home internet.'
             }
             else {
-                $results | Format-Table City, @{ N = 'open stealth ports'; E = { $_.Ports } } -AutoSize
-                Write-Info "$(@($results).Count) cities answered."
+                $results | Format-Table Country, City, @{ N = 'open stealth ports'; E = { $_.Ports } } -AutoSize
+                Write-Info "$(@($results).Count) locations answered, in $(@($results | Select-Object -ExpandProperty Country -Unique).Count) countries."
                 Write-Host ''
                 Write-Info 'Type one of these city names into the client and set the protocol'
                 Write-Info 'to Stealth. Checked against real connections, a city missing from'
@@ -570,39 +570,6 @@ try {
                 Write-Info 'Launch the client through this script first so it can reach the API,'
                 Write-Info 'then try again.'
             }
-            Write-Host ''
-        }
-
-        'locations' {
-            Write-Head "Connect-testing locations"
-            Write-Info 'Probing server IPs turned out not to predict anything for Windscribe -'
-            Write-Info 'the client fails over across many servers and ports by itself, so the'
-            Write-Info 'only honest test is to actually connect. That makes this slow.'
-            Write-Host ''
-
-            $names = @(& $ws.Cli locations 2>$null | Where-Object { $_ -match '\S' })
-            if (-not $names) {
-                Write-Bad 'The client returned no locations.'
-                Write-Info 'That itself means the API is not reachable - run -Action launch first.'
-                break
-            }
-            $pick = $names | Select-Object -First $Count
-            Write-Info "$($names.Count) locations known, trying the first $($pick.Count)."
-            Write-Host ''
-
-            $results = foreach ($n in $pick) {
-                $short = ($n -split '\s{2,}')[0].Trim()
-                Write-Host ("         {0,-24} " -f $short) -NoNewline -ForegroundColor DarkGray
-                $r = Connect-Windscribe $ws $short 'stealth'
-                if ($r.Connected) { Write-Host 'connected' -ForegroundColor Green }
-                else              { Write-Host 'failed'    -ForegroundColor Red }
-                [pscustomobject]@{ Location = $short; Works = $r.Connected }
-                Start-Sleep -Seconds 2
-            }
-
-            & $ws.Cli disconnect 2>$null | Out-Null
-            Write-Host ''
-            $results | Format-Table Location, @{ N = 'works'; E = { if ($_.Works) { 'yes' } else { 'no' } } } -AutoSize
             Write-Host ''
         }
 

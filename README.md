@@ -30,26 +30,40 @@ Do not double-click the `.ps1` file: Windows opens `.ps1` in an editor instead
 of running it. That is a Windows default, not a problem with the script.
 
 ```
-   Unblock-ExpressVPN
-   ==================
+   Unblock VPN
+   ===========
 
+   Nothing here connects for you. Once a step reports OK, connect from
+   the VPN app yourself.
+
+   ExpressVPN
      1   Diagnose            what is broken (changes nothing)
      2   Apply the fix       asks for administrator
-     3   Scan regions        disconnect the VPN first
-     4   Connect and test
-     5   Revert the fix      asks for administrator
+     3   List regions        which ones answer (disconnect the VPN first)
+     4   Revert the fix      asks for administrator
+     W   Why did it fail     read the last attempt out of the log
+     A   Repair adapter      when W blames the network adapter
+
+   Windscribe                no administrator needed
+     5   Diagnose            what is broken (changes nothing)
+     6   Start it fixed      relaunch with its API through the proxy
+     7   List locations      which ones answer (about a minute)
+     8   Desktop shortcut    always start it the right way
+     T   Test protocols      connects, to find which protocols work
+     R   Undo Windscribe     remove shortcut, start it normally
 
      0   Exit
 ```
 
 Start your proxy first, then run `1` to see what is wrong and `2` to fix it.
+Then open the ExpressVPN app and connect there — the tool never connects on
+your behalf. `T` is the single exception, and it says so.
 
 If you prefer the command line, open PowerShell in this folder:
 
 ```powershell
 .\Unblock-ExpressVPN.ps1                 # diagnose
 .\Unblock-ExpressVPN.ps1 -Action apply   # fix it
-.\Unblock-ExpressVPN.ps1 -Action test    # connect and show the exit IP
 ```
 
 If PowerShell refuses with a script-execution error, run it as:
@@ -107,15 +121,14 @@ The `Run.cmd` menu entries map one-to-one onto these.
 | `.\Unblock-ExpressVPN.ps1` | Diagnose. Is the API blocked, is there a usable proxy, is the fix in place? Changes nothing. |
 | `-Action apply` | Write the env block and restart the daemon. Needs admin. |
 | `-Action revert` | Undo it completely. Needs admin. |
-| `-Action scan` | Probe every server IP the client has cached and list the regions that still answer. |
-| `-Action test [-Region slug]` | Connect and print the exit IP. Picks a region from a scan if you don't name one. |
+| `-Action scan` | List the regions whose servers still answer. Connects to nothing. |
 
 Useful switches: `-Proxy http://127.0.0.1:1080` or `-Proxy socks5://...` to skip
 auto-detection, `-ProbesPerLocation 5` for a more thorough scan.
 
 ## Windscribe
 
-`Unblock-Windscribe.ps1` (menu entries 6–9) does the same job for Windscribe,
+`Unblock-Windscribe.ps1` (menu entries 5–8) does the same job for Windscribe,
 and it is gentler: **no administrator, no registry, nothing persistent.**
 
 Windscribe breaks the same way — `api.windscribe.com` is unreachable, so the
@@ -133,8 +146,8 @@ through the proxy.**
 |---|---|
 | `.\Unblock-Windscribe.ps1` | Diagnose. |
 | `-Action launch` | Restart the client with its API pointed at your proxy. |
-| `-Action scan` | Probe the cached servers and list cities that answer (~1 min). |
-| `-Action protocols` | Connect with each protocol and report which work. |
+| `-Action scan` | List the locations whose servers answer, grouped by country (~1 min). |
+| `-Action protocols` | The one step that connects: tries each protocol, reports which work. |
 | `-Action shortcut` | Desktop shortcut that always starts it this way. |
 | `-Action revert` | Remove the shortcut, start the client normally. |
 

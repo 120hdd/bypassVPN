@@ -23,20 +23,15 @@
     apply     Write the per-service proxy env block and restart the service.
     revert    Remove it and restart the service.
     scan      Probe every cached server IP and list reachable regions.
-    test      Connect to a region and report the exit IP.
 
 .PARAMETER Proxy
     Proxy URL to use, e.g. http://127.0.0.1:10808 or socks5://127.0.0.1:1080.
     Omit to auto-detect from the usual local ports.
 
-.PARAMETER Region
-    Region slug for -Action test. Defaults to the first region that scans clean.
-
 .EXAMPLE
     .\Unblock-ExpressVPN.ps1
     .\Unblock-ExpressVPN.ps1 -Action apply
     .\Unblock-ExpressVPN.ps1 -Action scan
-    .\Unblock-ExpressVPN.ps1 -Action test -Region slovenia
     .\Unblock-ExpressVPN.ps1 -Action revert
 
 .NOTES
@@ -50,12 +45,10 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('diagnose', 'apply', 'revert', 'scan', 'test', 'why', 'repair')]
+    [ValidateSet('diagnose', 'apply', 'revert', 'scan', 'why', 'repair')]
     [string] $Action = 'diagnose',
 
     [string] $Proxy,
-    [string] $Region,
-
     [ValidateRange(1, 10)]
     [int] $ProbesPerLocation = 3,
 
@@ -110,7 +103,6 @@ function Assert-Admin {
         '-ResultFile', "`"$relay`""
     )
     if ($Proxy)  { $argv += @('-Proxy', $Proxy) }
-    if ($Region) { $argv += @('-Region', $Region) }
 
     try {
         $p = Start-Process powershell -Verb RunAs -WindowStyle Hidden -ArgumentList $argv -PassThru -Wait
@@ -727,7 +719,7 @@ function Show-Diagnosis {
     }
     elseif ($cur -and ($cur -join ' ') -match [regex]::Escape($found.Url)) {
         Write-Info 'The fix is in place and the proxy it points at is working.'
-        Write-Info "Just connect from the app, or:  .\$me -Action test"
+        Write-Info 'Just connect from the ExpressVPN app.'
     }
     elseif ($cur) {
         Write-Info "The fix points at a different proxy than the one found."
@@ -855,75 +847,7 @@ try {
                 Write-Info '1/3 region often connects perfectly, and a 3/3 one is not faster.'
                 Write-Info 'Pick a nearby country for lower latency.'
                 Write-Host ''
-                Write-Info 'Set one in the ExpressVPN app, or from here:'
-                Write-Info "     menu option 4, or  -Action test -Region $($results[0].Region)"
-            }
-            Write-Host ''
-        }
-
-        'test' {
-            if (-not (Test-Path $xv.Ctl)) { throw "expressvpnctl.exe not found at $($xv.Ctl)" }
-            if (-not $Region) {
-                Assert-Disconnected $xv
-                Write-Head 'No -Region given, scanning for one'
-                $r = Invoke-Scan (Get-CachedLocations $xv) 2
-                if (-not $r) { throw 'No reachable region found.' }
-                $Region = $r[0].Region
-                Write-Ok "picked $Region"
-            }
-
-            Write-Head "Connecting to $Region"
-            & $xv.Ctl set protocol lightwayudp | Out-Null
-
-            # A daemon that started moments ago has not pulled its region data
-            # through the proxy yet, and every connect until it does just fails.
-            # One quiet retry covers that instead of reporting a false problem.
-            $state = $null
-            foreach ($attempt in 1, 2) {
-                & $xv.Ctl connect $Region | Out-Null
-                for ($i = 0; $i -lt 25 -and $state -ne 'Connected'; $i++) {
-                    Start-Sleep -Seconds 2
-                    $state = (& $xv.Ctl get connectionstate 2>$null | Select-Object -First 1)
-                }
-                if ($state -eq 'Connected') { break }
-                if ($attempt -eq 1) {
-                    Write-Info 'no luck yet - the daemon may still be starting up, waiting 30s'
-                    Start-Sleep -Seconds 30
-                    $state = $null
-                }
-            }
-
-            if ($state -ne 'Connected') {
-                Write-Bad "still $state after two attempts."
-                Write-Host ''
-                Write-Info 'Usual reasons, in order of likelihood:'
-                Write-Info "  - $Region is blocked here. Run a scan and pick another."
-                Write-Info '  - your proxy is off, so the client cannot fetch the server list.'
-                Write-Info '  - the fix is not applied yet - run the diagnose step and check.'
-            }
-            else {
-                Write-Ok "connected ($state), protocol LightwayUdp"
-
-                # A freshly established tunnel needs a few seconds before it
-                # carries traffic; one failed lookup here means nothing.
-                $ip = $null
-                foreach ($attempt in 1..3) {
-                    Start-Sleep -Seconds 5
-                    try {
-                        $ip = (Invoke-WebRequest 'https://api.ipify.org' -UseBasicParsing -TimeoutSec 15).Content.Trim()
-                        break
-                    }
-                    catch { }
-                }
-                if ($ip) {
-                    Write-Ok "exit IP: $ip"
-                    Write-Info 'If that is not your real IP, you are through the tunnel.'
-                }
-                else {
-                    Write-Warn 'connected, but the exit IP check did not answer.'
-                    Write-Info 'Not necessarily broken - open a website and see. If nothing'
-                    Write-Info 'loads, reconnect or pick another region.'
-                }
+                Write-Info 'Pick one and set it in the ExpressVPN app, then connect there.'
             }
             Write-Host ''
         }
