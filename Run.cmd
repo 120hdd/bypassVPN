@@ -31,6 +31,8 @@ echo      2   Apply the fix       asks for administrator
 echo      3   Scan regions        disconnect the VPN first
 echo      4   Connect and test
 echo      5   Revert the fix      asks for administrator
+echo      W   Why did it fail     read the last attempt out of the log
+echo      A   Repair adapter      when W blames the network adapter
 echo.
 echo    Windscribe                no administrator needed
 echo      6   Diagnose            what is broken (changes nothing)
@@ -59,6 +61,8 @@ if "%choice%"=="2" ( set "PS1=%XV%" & set "ACT=apply"     & goto run )
 if "%choice%"=="3" ( set "PS1=%XV%" & set "ACT=scan"      & goto run )
 if "%choice%"=="4" ( goto test )
 if "%choice%"=="5" ( set "PS1=%XV%" & set "ACT=revert"    & goto run )
+if /i "%choice%"=="W" ( set "PS1=%XV%" & set "ACT=why"    & goto run )
+if /i "%choice%"=="A" ( set "PS1=%XV%" & set "ACT=repair" & goto run )
 if "%choice%"=="6" ( set "PS1=%WS%" & set "ACT=diagnose"  & goto run )
 if "%choice%"=="7" ( set "PS1=%WS%" & set "ACT=launch"    & goto run )
 if "%choice%"=="8" ( set "PS1=%WS%" & set "ACT=scan"      & goto run )

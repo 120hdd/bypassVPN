@@ -183,12 +183,48 @@ Protocols measured here: **stealth** and **ikev2** work reliably, `tcp` and
   through it. Once the tunnel is up it is self-sustaining — the proxy's own
   traffic then rides inside the VPN.
 - **You never need to run the tool again.** The fix is a registry value under
-  the service key; it survives reboots. But a freshly started daemon spends
-  30–60 s pulling its region list through the proxy, and every connect attempt
-  before that finishes fails. Measured: connect immediately after a service
-  restart → failed; wait 45 s doing nothing at all → connected. Running the
-  tool takes about that long, which makes it look like the tool fixed
-  something. So after a reboot, wait a minute or just hit Connect twice.
+  the service key; it survives reboots. Tested with every console window
+  closed: waited 90 s, connected fine; restarted the service with nothing
+  open, first attempt connected.
+- **Connecting does fail intermittently, and a second attempt usually works.**
+  Right after a failure run `-Action why`: it pulls that attempt out of the
+  daemon log and says where it actually stalled, instead of guessing.
+
+### What that intermittent failure actually is
+
+Measured over one session: **62 connection attempts, 3 failures — about 5%.**
+All three failed at the same 12.9 seconds, and all three for the same reason:
+
+```
+lightway: "Nudging Lightway..."      x7, backing off 0.2s 0.4s 0.8s 1.6s 3.2s 6.4s
+lightway: he_client_nudge error: HE_CONNECTION_TIMED_OUT
+Attempt failed, duration: 12911 ms
+```
+
+Lightway sent its handshake to the server, retried with a widening backoff and
+gave up. The server list had already arrived, so the proxy and this fix were
+working — the packets to that particular server just did not make it there and
+back. On a filtered line that happens now and then. **Hit Connect again.** If
+one region keeps doing it, take another from `-Action scan`.
+
+Two things in that log look like causes and are not:
+
+- **`wintun_run_...` / `wintun_set_...` and "Failed to update DNS servers".**
+  These appear *below* the failure line — they are the tunnel being torn down
+  afterwards. `Error retrieving interface with GetIpInterfaceEntry: code: 1168`
+  is likewise normal; it shows up in successful connections too, right before
+  the daemon recreates the adapter. `-Action why` only counts adapter evidence
+  found *before* the failure, and only the wintun errors that mean the device
+  would not open at all. If it does blame the adapter, `-Action repair`
+  disconnects, restarts the daemon so it releases the device, and bounces any
+  ExpressVPN adapter still present.
+- **Decoy-domain errors** — `cheddar-chute.com`, `happy-bean-roastery.com` and
+  friends are ExpressVPN's own anti-censorship IP probes. They fail here
+  constantly by design. `-Action why` labels them as background noise.
+
+And no, keeping a console window open makes no difference. Six disconnect and
+reconnect cycles with nothing open connected six times, in 3–6 seconds each.
+What looks like "it works when cmd is running" is the retry, not the window.
 - **Use Lightway UDP.** On a filtered line Lightway TCP puts a reliable stream
   inside a reliable stream and collapses: measured interleaved on one region,
   UDP did 31–39 MB/s while TCP did 0.06–0.11 MB/s. Same tunnel, ~300× apart.

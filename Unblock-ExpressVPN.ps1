@@ -50,7 +50,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('diagnose', 'apply', 'revert', 'scan', 'test')]
+    [ValidateSet('diagnose', 'apply', 'revert', 'scan', 'test', 'why', 'repair')]
     [string] $Action = 'diagnose',
 
     [string] $Proxy,
@@ -456,6 +456,210 @@ function Invoke-Scan {
 }
 
 
+#--------------------------------------------------------------- adapter nudge
+
+# When the tunnel adapter goes missing the daemon normally recreates it on the
+# next try. This forces that to happen now: drop the tunnel, restart the
+# daemon so it lets go of the device, and bounce any ExpressVPN adapter still
+# hanging around.
+function Repair-Adapter {
+    param($Xv)
+
+    Write-Info 'disconnecting first...'
+    if (Test-Path $Xv.Ctl) { & $Xv.Ctl disconnect 2>$null | Out-Null }
+    Start-Sleep -Seconds 3
+
+    $before = @(Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue |
+        Where-Object { $_.InterfaceDescription -match 'ExpressVPN' })
+    foreach ($a in $before) { Write-Info "found adapter: $($a.Name) [$($a.Status)]" }
+
+    Write-Info 'restarting the daemon so it releases the adapter...'
+    $state = Restart-Daemon
+    if ($state -eq 'Running') { Write-Ok "daemon restarted ($state)" } else { Write-Bad "daemon is $state" }
+
+    foreach ($a in $before) {
+        try {
+            Disable-NetAdapter -Name $a.Name -Confirm:$false -ErrorAction Stop
+            Start-Sleep -Seconds 2
+            Enable-NetAdapter -Name $a.Name -Confirm:$false -ErrorAction Stop
+            Write-Ok "bounced $($a.Name)"
+        }
+        catch {
+            # Wintun devices come and go with the tunnel, so a missing one here
+            # is normal rather than a problem: the daemon will make a new one.
+            Write-Info "$($a.Name) could not be bounced - the daemon will recreate it"
+        }
+    }
+
+    Write-Info 'letting the daemon settle...'
+    Start-Sleep -Seconds 15
+    Write-Ok 'done'
+}
+
+
+#------------------------------------------------------ last attempt forensics
+
+# Run this straight after a connect fails. The daemon writes down exactly what
+# it was doing, which beats guessing at a failure you cannot reproduce later.
+function Show-LastAttempt {
+    param($Xv)
+
+    $daemonLog = Join-Path $Xv.Dir 'data\daemon.log'
+    $sdkLog    = Join-Path $Xv.Dir 'data\csdk.log'
+    if (-not (Test-Path $daemonLog)) { throw "No daemon log at $daemonLog." }
+
+    $lines = (Read-SharedText $daemonLog) -split "`r?`n"
+
+    $startIdx = -1
+    for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+        if ($lines[$i] -match 'Session started for location') { $startIdx = $i; break }
+    }
+    if ($startIdx -lt 0) {
+        Write-Warn 'No connection attempt found in the log yet.'
+        Write-Info 'Try to connect once, then run this again.'
+        return
+    }
+
+    $block = $lines[$startIdx..($lines.Count - 1)]
+    if ($block[0] -match 'location: "([^"]+)"') { Write-Info "region: $($Matches[1])" }
+    if ($block[0] -match '^\[([0-9: .-]+)\]')   { Write-Info "started: $($Matches[1].Trim())" }
+
+    # The endpoint is the single most useful line in the log and it is buried:
+    # Lightway UDP does not use 443, it gets a random high port per server, and
+    # that is exactly what a filtering ISP drops most readily.
+    $tried = @($block | Where-Object { $_ -match 'Selected server is:' } | ForEach-Object {
+        if ($_ -match '"([\d.]+)" port (\d+)') { "$($Matches[1]):$($Matches[2])" }
+    })
+    if ($tried) {
+        $uniq = $tried | Select-Object -Unique
+        Write-Info "servers tried: $($uniq -join ', ')"
+        if ($uniq.Count -gt 1) {
+            Write-Info "  ($($tried.Count) attempts across $($uniq.Count) servers - the daemon walks the list by itself)"
+        }
+    }
+
+    $interesting = $block | Where-Object {
+        $_ -match 'Fetching endpoints|Force refreshing cache|Connection token|Session failed|' +
+                  'Attempt failed|HE_CONNECTION_TIMED_OUT|Nudging Lightway|LWState|' +
+                  'connectionstate|error|failed|timeout|refused'
+    } | Where-Object {
+        # Firewall bookkeeping and teardown chatter drown out the one line that
+        # says what actually went wrong.
+        $_ -notmatch 'mcp-server|expressvpnctl|client count|Reapplying firewall|' +
+                     'allowLAN|allowDNS|blockAll|allowVPN|allowSelf|allowLoopback|' +
+                     'Stopping tun thread|Closing tun device|Tun thread stopped'
+    }
+
+    Write-Host ''
+    Write-Info 'what the daemon did:'
+    foreach ($l in ($interesting | Select-Object -First 14)) {
+        $txt = ($l -replace '^\[[^\]]+\]\[[^\]]+\]\[[^\]]+\]', '').Trim()
+        Write-Host "           $($txt.Substring(0, [Math]::Min(110, $txt.Length)))" -ForegroundColor DarkGray
+    }
+
+    $failIdx = -1
+    for ($i = 0; $i -lt $block.Count; $i++) {
+        if ($block[$i] -match 'Session failed|Attempt failed') { $failIdx = $i; break }
+    }
+    $failed  = $failIdx -ge 0
+    $stuckOn = ($block -match 'Force refreshing cache').Count -gt 0 -and
+               ($block -match 'Connection token refreshed').Count -eq 0
+
+    # Everything after the failure line is teardown: closing the tun device
+    # logs wintun_ errors every time, and reading those as the cause points at
+    # the adapter when the tunnel simply never came up. Only look before.
+    $upTo = if ($failed) { $block[0..$failIdx] } else { $block }
+
+    # Lightway retries its handshake with a widening backoff and gives up at
+    # about 13 s. That means the packets went out and nothing came back - the
+    # server was never reached.
+    $handshake = ($upTo -match 'HE_CONNECTION_TIMED_OUT').Count -gt 0 -or
+                 ($upTo -match 'Nudging Lightway').Count -ge 5
+
+    # A real adapter problem stops the tunnel before it starts. Note that
+    # GetIpInterfaceEntry 1168 alone is not it: that shows up in successful
+    # connections too, right before the daemon recreates the adapter.
+    $adapter = ($upTo -match 'wintun_(run|set)|Failed to open adapter').Count -gt 0
+
+    # Only the real API host is evidence. expressvpn.com and the innocuous
+    # decoy domains are the client's own anti-censorship IP probes: they fail
+    # here constantly, by design, and blaming them sends you after the wrong
+    # problem.
+    $apiErrors = @()
+    $noise = @()
+    if (Test-Path $sdkLog) {
+        $all = (Read-SharedText $sdkLog) -split "`r?`n" |
+            Where-Object { $_ -match 'FAILED TO EXECUTE|ConnectError|TimedOut|ConnectionReset' }
+        $apiErrors = @($all | Where-Object { $_ -match 'expressapisv2' } | Select-Object -Last 3)
+        $noise     = @($all | Where-Object { $_ -notmatch 'expressapisv2' } | Select-Object -Last 2)
+    }
+
+    function Format-SdkError { param($e)
+        if ($e -match 'url: "([^"]+)".*?source: (.{0,60})') { "$($Matches[1])  ->  $($Matches[2])" }
+        else { $e.Substring(0, [Math]::Min(110, $e.Length)) }
+    }
+
+    if ($apiErrors) {
+        Write-Host ''
+        Write-Info 'errors talking to the real API:'
+        foreach ($e in $apiErrors) { Write-Host "           $(Format-SdkError $e)" -ForegroundColor DarkGray }
+    }
+    if ($noise) {
+        Write-Host ''
+        Write-Info 'background noise (safe to ignore - these always fail here):'
+        foreach ($e in $noise) { Write-Host "           $(Format-SdkError $e)" -ForegroundColor DarkGray }
+    }
+
+    Write-Host ''
+    if (-not $failed) {
+        Write-Ok 'that attempt did not record a failure.'
+    }
+    elseif ($handshake) {
+        Write-Bad 'the tunnel handshake got no answer from the server.'
+        Write-Info 'Lightway sent its handshake, retried with a widening backoff and'
+        Write-Info 'gave up after about 13 seconds. The server list arrived fine, so'
+        Write-Info 'the proxy and this fix are working - the packets to that server'
+        Write-Info 'just did not make it there and back.'
+        Write-Host ''
+        Write-Info 'Lightway UDP does not use port 443 - each server hands out a random'
+        Write-Info 'high port, and those are the first thing a filtering ISP drops. So'
+        Write-Info 'this comes and goes on the same server from one minute to the next.'
+        Write-Host ''
+        Write-Info 'Just hit Connect again - it usually goes through on the retry. The'
+        Write-Info 'daemon also works down the region server list on its own. If every'
+        Write-Info 'server in a region fails, that region is out; take another from'
+        Write-Info '-Action scan.'
+        Write-Host ''
+        Write-Info 'Ignore any wintun_ errors below the failure line - that is the'
+        Write-Info 'tunnel being torn down afterwards, not the reason it failed.'
+    }
+    elseif ($adapter) {
+        Write-Bad 'the ExpressVPN virtual network adapter would not open.'
+        Write-Info 'Nothing to do with the region, the proxy, or this fix - it is a'
+        Write-Info 'Windows-side adapter problem. The daemon usually recreates the'
+        Write-Info 'adapter by itself, which is why a second attempt tends to work.'
+        Write-Host ''
+        Write-Info "Hit Connect again. If it keeps happening:  -Action repair"
+    }
+    elseif ($apiErrors) {
+        Write-Bad 'the API call could not get out.'
+        Write-Info 'Almost always the proxy: not running, or not connected itself.'
+        Write-Info 'Check it opens a blocked site in your browser, then retry.'
+    }
+    elseif ($stuckOn) {
+        Write-Bad 'it never finished fetching the server list for that region.'
+        Write-Info 'Either the proxy was slow or down, or that region is blocked.'
+        Write-Info "Try -Action scan for a region that answers, and check the proxy."
+    }
+    else {
+        Write-Bad 'the attempt failed after the server list was in hand.'
+        Write-Info 'That points at the region itself rather than the fix.'
+        Write-Info 'Pick another one from -Action scan.'
+    }
+    Write-Host ''
+}
+
+
 #--------------------------------------------------------------------- checks
 
 function Show-Diagnosis {
@@ -606,6 +810,27 @@ try {
             else { Write-Info 'nothing was applied' }
             $state = Restart-Daemon
             Write-Ok "service restarted ($state)"
+            Write-Host ''
+        }
+
+        'why' {
+            Write-Head 'Why the last connection attempt failed'
+            Show-LastAttempt $xv
+        }
+
+        'repair' {
+            Assert-Admin
+            Write-Head 'Nudging the ExpressVPN network adapter'
+            Write-Info 'Use this when -Action why blames the adapter, or when connecting'
+            Write-Info 'keeps failing on the first try. It changes no settings.'
+            Write-Host ''
+            Repair-Adapter $xv
+
+            Write-Host ''
+            Write-Info 'Now connect from the app. If it fails again, run the why step -'
+            Write-Info 'if it still blames the adapter, reboot: that clears stuck virtual'
+            Write-Info 'adapters properly. Having several VPN clients installed makes this'
+            Write-Info 'more likely, since they each add their own adapters.'
             Write-Host ''
         }
 
