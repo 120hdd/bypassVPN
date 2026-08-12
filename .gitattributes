@@ -1,0 +1,10 @@
+# cmd.exe seeks batch labels by byte offset and expects CRLF. A .cmd that ends
+# up with LF endings makes `goto` fail partway through, which ends the script
+# and closes the window on anyone who double-clicked it - with no error they
+# can read. Marking it binary means git never rewrites those bytes, on checkout
+# or in a downloaded ZIP.
+*.cmd  -text
+*.bat  -text
+
+*.ps1  text eol=crlf
+*.md   text eol=lf
