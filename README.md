@@ -182,6 +182,13 @@ Protocols measured here: **stealth** and **ikev2** work reliably, `tcp` and
 - **Your proxy must be running whenever ExpressVPN connects.** Bootstrap goes
   through it. Once the tunnel is up it is self-sustaining — the proxy's own
   traffic then rides inside the VPN.
+- **You never need to run the tool again.** The fix is a registry value under
+  the service key; it survives reboots. But a freshly started daemon spends
+  30–60 s pulling its region list through the proxy, and every connect attempt
+  before that finishes fails. Measured: connect immediately after a service
+  restart → failed; wait 45 s doing nothing at all → connected. Running the
+  tool takes about that long, which makes it look like the tool fixed
+  something. So after a reboot, wait a minute or just hit Connect twice.
 - **Use Lightway UDP.** On a filtered line Lightway TCP puts a reliable stream
   inside a reliable stream and collapses: measured interleaved on one region,
   UDP did 31–39 MB/s while TCP did 0.06–0.11 MB/s. Same tunnel, ~300× apart.

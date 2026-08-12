@@ -583,12 +583,16 @@ try {
             Write-Info 'Disconnect, then find one that works:'
             Write-Info "     menu option 3, or  -Action scan"
             Write-Host ''
-            Write-Info 'Two things to remember:'
+            Write-Info 'Three things to remember:'
             Write-Info '  - keep your proxy running whenever ExpressVPN connects. Afterwards'
             Write-Info '    the tunnel stands on its own, and it does not spend your proxy'
             Write-Info '    data - only the tiny API calls go that way.'
             Write-Info '  - use the Lightway UDP protocol. On a censored line Lightway TCP'
             Write-Info '    connects but crawls; WireGuard and OpenVPN do not connect at all.'
+            Write-Info '  - after a reboot, give the daemon about a minute before you hit'
+            Write-Info '    Connect. It pulls its region list through the proxy first, and'
+            Write-Info '    every attempt before that finishes just fails. You never need to'
+            Write-Info '    run this tool again - the fix is permanent.'
             Write-Host ''
         }
 
@@ -645,16 +649,27 @@ try {
 
             Write-Head "Connecting to $Region"
             & $xv.Ctl set protocol lightwayudp | Out-Null
-            & $xv.Ctl connect $Region          | Out-Null
 
-            $state = 'Connecting'
-            for ($i = 0; $i -lt 25 -and $state -ne 'Connected'; $i++) {
-                Start-Sleep -Seconds 2
-                $state = (& $xv.Ctl get connectionstate 2>$null | Select-Object -First 1)
+            # A daemon that started moments ago has not pulled its region data
+            # through the proxy yet, and every connect until it does just fails.
+            # One quiet retry covers that instead of reporting a false problem.
+            $state = $null
+            foreach ($attempt in 1, 2) {
+                & $xv.Ctl connect $Region | Out-Null
+                for ($i = 0; $i -lt 25 -and $state -ne 'Connected'; $i++) {
+                    Start-Sleep -Seconds 2
+                    $state = (& $xv.Ctl get connectionstate 2>$null | Select-Object -First 1)
+                }
+                if ($state -eq 'Connected') { break }
+                if ($attempt -eq 1) {
+                    Write-Info 'no luck yet - the daemon may still be starting up, waiting 30s'
+                    Start-Sleep -Seconds 30
+                    $state = $null
+                }
             }
 
             if ($state -ne 'Connected') {
-                Write-Bad "still $state after 50s."
+                Write-Bad "still $state after two attempts."
                 Write-Host ''
                 Write-Info 'Usual reasons, in order of likelihood:'
                 Write-Info "  - $Region is blocked here. Run a scan and pick another."
