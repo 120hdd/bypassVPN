@@ -47,9 +47,9 @@ of running it. That is a Windows default, not a problem with the script.
    Windscribe                no administrator needed
      5   Diagnose            what is broken (changes nothing)
      6   Start it fixed      relaunch with its API through the proxy
-     7   List locations      which ones answer (about a minute)
+     7   List locations      which ones answer, for protocols you pick
      8   Desktop shortcut    always start it the right way
-     T   Test protocols      connects, to find which protocols work
+     T   Test protocols      which protocols work, and which uploads best
      R   Undo Windscribe     remove shortcut, start it normally
 
      0   Exit
@@ -146,8 +146,8 @@ through the proxy.**
 |---|---|
 | `.\Unblock-Windscribe.ps1` | Diagnose. |
 | `-Action launch` | Restart the client with its API pointed at your proxy. |
-| `-Action scan` | List the locations whose servers answer, grouped by country (~1 min). |
-| `-Action protocols` | The one step that connects: tries each protocol, reports which work. |
+| `-Action scan` | List the locations whose servers answer, grouped by country (~1 min). Add `-Protocols stealth,ikev2` to pick what it looks for. |
+| `-Action protocols` | The one step that connects: tries each protocol, measures what each carries, reports which work and which uploads fastest. Add `-Location "Frankfurt"` to aim it. |
 | `-Action shortcut` | Desktop shortcut that always starts it this way. |
 | `-Action revert` | Remove the shortcut, start the client normally. |
 
@@ -179,8 +179,82 @@ never connected** (6 of 6), while about one listed city in six still failed
 (5 of 6 worked). Treat the list as a filter, not a promise — if one does not
 come up, take the next.
 
+### Scanning for a particular protocol
+
+`-Protocols` picks what the scan looks for; the menu asks the same question
+before running it. Ports come from the client's own `portMap` rather than a
+copy here, so they follow Windscribe when it moves one. Each protocol is
+probed the way it actually answers:
+
+| Protocol | Address | Probe |
+|---|---|---|
+| `stealth` | `ip3` | TCP connect + TLS handshake — stunnel terminates real TLS |
+| `wstunnel` | `ip` | TCP connect + TLS handshake |
+| `tcp` | `ip2` | TCP connect — OpenVPN does not speak TLS on the wire |
+| `ikev2` | `ip` | a real `IKE_SA_INIT`, requiring a reply that carries our own SPI back |
+| `udp`, `wireguard` | — | **not possible**, see below |
+
+One run against 126 cities: `tcp` answered in all 126, `ikev2` in 119,
+`stealth` in 95, `wstunnel` in 67. A column that answers nearly everywhere
+ranks nothing, and the scan says so rather than letting a full column read as a
+list of good cities — it means that port is not filtered here at all, and
+whatever stops a connection happens later in the handshake where a port scan
+cannot see.
+
+**`udp` and `wireguard` cannot be port-scanned by anyone.** OpenVPN UDP is
+behind `tls-auth` and WireGuard requires a handshake signed with the server's
+public key, which the client never caches; both silently drop anything else, so
+silence means "blocked" and "working" equally. Asking for them prints that
+instead of a fabricated column. `-Action protocols` answers them by connecting.
+
+Two things this scan had to get right, both of which produced confidently wrong
+answers first:
+
+- **Hostnames are resolved to the server's own `ip` field, not through DNS.**
+  IKEv2 and WStunnel are listed against a hostname, and DNS is one of the things
+  being censored — `tr-022` and `uk-044` both resolved to `10.10.34.36` during
+  testing. A scan built on that answers for a machine on the local network.
+- **UDP probes run in their own pass, at a fraction of the width.** A lost
+  datagram is simply gone, and thousands of concurrent TCP connects lose enough
+  of them to invert the result: the same fleet that reported 119 reachable
+  IKEv2 cities alone reported none at all when sharing a run. Retransmitting
+  three times did not close that gap; not competing with the TCP flood did.
+
 Protocols measured here: **stealth** and **ikev2** work reliably, `tcp` and
 `wstunnel` are intermittent, `udp` and `wireguard` never connect.
+
+### Which protocol, and how fast
+
+`-Action protocols` connects with each one in turn and then pushes real traffic
+through it, so the answer is measured rather than assumed. Roughly 60 MB per
+protocol.
+
+The gap is not small. On a 62 Mbps line, one run to Frankfurt:
+
+| Protocol | Connects | Upload |
+|---|---|---|
+| `ikev2` | yes | 53–65 Mbps |
+| `stealth` | yes | 3–4 Mbps |
+| `tcp` | sometimes | 1.8 Mbps |
+| `wstunnel`, `udp`, `wireguard` | no | — |
+
+So Stealth costs roughly **fifteen times** the upload of IKEv2 here. It is the
+one most likely to come up at all, which is why it is the fallback — but it is
+the wrong default if IKEv2 connects.
+
+Judge by the upload column. It is timed over a steady-state window, discarding
+the first seconds where TCP slow start and a filling socket buffer would report
+a rate the wire never carried, and it repeats to within a few percent. Download
+is one short transfer and deliberately kept small: a line that bursts before it
+throttles answers differently every run however it is measured, and a heavier
+download test would spend the burst allowance the next protocol's turn needs.
+
+**Aim it with `-Location`.** Left to itself the client connects to its own
+"best", chosen on latency, which says nothing about whether that place is
+reachable from here. When that pick is dead every protocol fails at once and
+none of them is at fault — during testing `best` resolved to Manchester, which
+answered every port in the scan and still refused all six protocols, while
+Frankfurt and Istanbul connected on three. Take a city from `-Action scan`.
 
 ## Requirements
 

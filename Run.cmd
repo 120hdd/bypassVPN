@@ -15,6 +15,7 @@ for %%F in ("%XV%" "%WS%") do (
 
 :menu
 cls
+set "EXTRA="
 echo.
 echo    Unblock VPN
 echo    ===========
@@ -39,9 +40,9 @@ echo.
 echo    Windscribe                no administrator needed
 echo      5   Diagnose            what is broken (changes nothing)
 echo      6   Start it fixed      relaunch with its API through the proxy
-echo      7   List locations      which ones answer (about a minute)
+echo      7   List locations      which ones answer, for protocols you pick
 echo      8   Desktop shortcut    always start it the right way
-echo      T   Test protocols      connects, to find which protocols work
+echo      T   Test protocols      which protocols work, and which uploads best
 echo      R   Undo Windscribe     remove shortcut, start it normally
 echo.
 echo      0   Exit
@@ -66,12 +67,67 @@ if /i "%choice%"=="W" ( set "PS1=%XV%" & set "ACT=why"    & goto run )
 if /i "%choice%"=="A" ( set "PS1=%XV%" & set "ACT=repair" & goto run )
 if "%choice%"=="5" ( set "PS1=%WS%" & set "ACT=diagnose"  & goto run )
 if "%choice%"=="6" ( set "PS1=%WS%" & set "ACT=launch"    & goto run )
-if "%choice%"=="7" ( set "PS1=%WS%" & set "ACT=scan"      & goto run )
+if "%choice%"=="7" ( set "PS1=%WS%" & set "ACT=scan"      & goto askproto )
 if "%choice%"=="8" ( set "PS1=%WS%" & set "ACT=shortcut"  & goto run )
-if /i "%choice%"=="T" ( set "PS1=%WS%" & set "ACT=protocols" & goto run )
+if /i "%choice%"=="T" ( set "PS1=%WS%" & set "ACT=protocols" & goto askloc )
 if /i "%choice%"=="R" ( set "PS1=%WS%" & set "ACT=revert" & goto run )
 if "%choice%"=="0" exit /b 0
 goto menu
+
+rem Which protocols the location scan should probe for. Stealth alone is the
+rem old behaviour and stays the default, since it is the one most likely to
+rem come up at all.
+:askproto
+echo.
+echo    Which protocols should it look for?
+echo.
+echo      1  stealth     TLS-wrapped, survives censorship best, slowest
+echo      2  ikev2       fastest here by a wide margin
+echo      3  tcp         OpenVPN over TCP
+echo      4  wstunnel    OpenVPN inside a websocket
+echo      5  udp         OpenVPN over UDP     - cannot be scanned, see below
+echo      6  wireguard   WireGuard            - cannot be scanned, see below
+echo.
+echo    Type the numbers together, e.g. 12 for stealth and ikev2.
+echo    Blank = stealth only. More protocols means a longer scan.
+echo.
+echo    5 and 6 have no answer a port scan can give - both stay silent unless
+echo    you already hold the key to talk to them. Pick them and it will say so
+echo    and point you at "T  Test protocols", which connects for real.
+echo.
+set "WSPROTO="
+set /p "WSPROTO=   Protocols (blank = stealth): "
+if not defined WSPROTO goto run
+set "PLIST="
+echo !WSPROTO! | findstr /c:"1" >nul && set "PLIST=!PLIST!,stealth"
+echo !WSPROTO! | findstr /c:"2" >nul && set "PLIST=!PLIST!,ikev2"
+echo !WSPROTO! | findstr /c:"3" >nul && set "PLIST=!PLIST!,tcp"
+echo !WSPROTO! | findstr /c:"4" >nul && set "PLIST=!PLIST!,wstunnel"
+echo !WSPROTO! | findstr /c:"5" >nul && set "PLIST=!PLIST!,udp"
+echo !WSPROTO! | findstr /c:"6" >nul && set "PLIST=!PLIST!,wireguard"
+if not defined PLIST (
+    echo.
+    echo    Nothing recognised in "!WSPROTO!" - scanning for stealth.
+    echo.
+    goto run
+)
+set "EXTRA=-Protocols !PLIST:~1!"
+goto run
+
+rem The client picks its "best" location on latency, which says nothing about
+rem whether it can be reached from here. When that pick is dead every protocol
+rem fails at once and none of them is the reason, so offer to aim somewhere the
+rem location scan already vouched for.
+:askloc
+echo.
+echo    Which location should it test against?
+echo    Leave blank to let the client choose. If that comes back with every
+echo    protocol failing, run "7  List locations" and name one of those here.
+echo.
+set "WSLOC="
+set /p "WSLOC=   Location (blank = client's choice): "
+if defined WSLOC set "EXTRA=-Location "%WSLOC%""
+goto run
 
 :run
 if not exist "%PS1%" (
@@ -82,7 +138,7 @@ if not exist "%PS1%" (
     goto menu
 )
 echo.
-powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%" -Action %ACT%
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%" -Action %ACT% %EXTRA%
 echo.
 pause
 goto menu
